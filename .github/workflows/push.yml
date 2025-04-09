@@ -1,16 +1,10 @@
 name: Push to Replicate
 
 on:
-  # Workflow dispatch allows you to manually trigger the workflow from GitHub.com
-  # Go to your repo, click "Actions", click "Push to Replicate", click "Run workflow"
   workflow_dispatch:
     inputs:
       model_name:
-        description: 'Enter the model name, like "alice/bunny-detector". If unset, this will default to the value of `image` in cog.yaml.'
-  # # Uncomment these lines to trigger the workflow on every push to the main branch
-  # push:
-  #   branches:
-  #     - main
+        description: 'Enter the model name, like "alice/bunny-detector". If unset, will use the value of `image` in cog.yaml.'
 
 jobs:
   push_to_replicate:
@@ -19,8 +13,6 @@ jobs:
     environment: replicate
 
     steps:
-      # This action cleans up disk space to make more room for your
-      # model code, weights, etc.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
@@ -30,24 +22,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive  # Fetches all submodules recursively
+          submodules: recursive
 
-      # This action installs Docker buildx and Cog (and optionally CUDA)
       - name: Setup Cog
         uses: replicate/setup-cog@v2
         with:
-          # If you set REPLICATE_API_TOKEN in your GitHub repository secrets,
-          # the action will authenticate with Replicate automatically so you
-          # can push your model
           token: ${{ secrets.REPLICATE_API_TOKEN }}
 
-      # If you trigger the workflow manually, you can specify the model name.
-      # If you leave it blank (or if the workflow is triggered by a push), the 
-      # model name will be derived from the `image` value in cog.yaml.
       - name: Push to Replicate
+        id: push_model
         run: |
           if [ -n "${{ inputs.model_name }}" ]; then
-            cog push r8.im/${{ inputs.model_name }}
+            PUSH_OUTPUT=$(cog push r8.im/${{ inputs.model_name }})
+            MODEL_NAME="${{ inputs.model_name }}"
           else
-            cog push
+            PUSH_OUTPUT=$(cog push)
+            MODEL_NAME=$(echo "$PUSH_OUTPUT" | grep -oE 'r8\.im/.+/.+' | head -n1 | cut -d '/' -f2-)
           fi
+
+          echo "$PUSH_OUTPUT"
+
+          # Extract Version ID from output like: https://replicate.com/owner/model/versions/xxxxxxxxxxxx
+          VERSION_ID=$(echo "$PUSH_OUTPUT" | grep -oE 'replicate\.com/.+?/[^ ]+/versions/[a-z0-9\-]+' | head -n1 | awk -F '/' '{print $6}')
+
+          echo "VERSION_ID=$VERSION_ID" >> $GITHUB_ENV
+          echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_ENV
+
+      - name: Enable model version
+        if: env.VERSION_ID != ''
+        run: |
+          echo "Enabling version ${VERSION_ID} for model ${MODEL_NAME}..."
+          curl -X POST \
+            -H "Authorization: Token ${{ secrets.REPLICATE_API_TOKEN }}" \
+            https://api.replicate.com/v1/models/${{ env.MODEL_NAME }}/versions/${{ env.VERSION_ID }}/enable
